@@ -1,0 +1,134 @@
+<!--
+    API Management policy checking consumed token quotas of AOAI per day for given subscriptions
+
+		Requirements:
+		- APIM subscription key is stored in request header (not query parameter)
+		- need to adjust tokenQuotas variable:
+			- include given subscription keys
+			- define quotas per subscription keys
+-->
+<policies>
+    <inbound>
+        <base />
+        <set-variable name="subscriptionKey" value="@(context.Request.Headers.GetValueOrDefault("Ocp-Apim-Subscription-Key", ""))" />
+        <!-- Getting the main variable where we keep the token quotas -->
+        <cache-lookup-value key="tokenQuotas" variable-name="tokenQuotas" />
+        <!-- If we can't find the variable, initialize it -->
+        <choose>
+            <when condition="@(context.Variables.ContainsKey("tokenQuotas") == false)">
+                <set-variable name="tokenQuotas" value="@{
+                    JObject quotas = new JObject();
+                    quotas["YOUR_SUBSCRIPTION_KEY"] = new JObject()
+                    {
+                        { "quota", 5 },
+                        { "tokens", 0 },
+                        { "isQuotaReached", false },
+                        { "updated", DateTime.Now }, 
+                    };
+
+                    return quotas;   
+                }" />
+                <!-- And store the variable into cache again -->
+                <cache-store-value key="tokenQuotas" value="@((JObject)context.Variables["tokenQuotas"])" duration="86400" />
+            </when>
+        </choose>
+        <!-- Determine if quota for given subscriptionKey was reached -->
+        <set-variable name="isQuotaReached" value="@{
+            JObject quotas = (JObject)context.Variables["tokenQuotas"];
+            string key = (string)context.Variables["subscriptionKey"];
+
+            if (quotas.ContainsKey(key)) {
+                JObject quota = (JObject) quotas[key];
+
+                bool isQuotaReached = quota.Value<bool>("isQuotaReached");
+                DateTime updated = quota.Value<DateTime>("updated");
+                
+                return DateTime.Now.Day == updated.Day ? isQuotaReached : false;
+            }
+
+            return true;
+            }" />
+        <choose>
+            <!-- In case quota was reached return error -->
+            <when condition="@(((bool)context.Variables["isQuotaReached"]) == true)">
+                <return-response>
+                    <set-status code="429" reason="Token quota reached" />
+                    <set-header name="x-openai-retry-after" exists-action="override">
+                        <value>@(Math.Round(((new DateTime(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day + 1, 0, 0, 0)) - DateTime.Now).TotalSeconds).ToString() )</value>
+                    </set-header>
+                </return-response>
+            </when>
+        </choose>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <choose>
+            <!-- In case we got 2xx from a backend, update the consumed tokens -->
+            <when condition="@(context.Response != null && (context.Response.StatusCode >= 200 || context.Response.StatusCode < 300) )">
+                <cache-lookup-value key="tokenQuotas" variable-name="tokenQuotas" />
+                <set-variable name="tokenQuotas" value="@{
+                    JObject quotas = (JObject)context.Variables["tokenQuotas"];
+					string key = (string)context.Variables["subscriptionKey"];
+                    
+                    if (quotas.ContainsKey(key)) {
+						int consumedTokens = 1;
+
+                        JObject response = context.Response.Body.As<JToken>(preserveContent: true) is JObject ? 
+                            context.Response.Body.As<JObject>(preserveContent: true) :
+                            null;
+						if (response != null && response.ContainsKey("body")) {
+							JObject body = response.Value<JObject>("body");
+
+							if (body.ContainsKey("usage")) {
+								JObject usage = response.Value<JObject>("usage");
+								consumedTokens = usage.ContainsKey("total_tokens") ? usage.Value<int>("total_tokens") : 0;
+							}
+						}
+
+                        JObject quota = (JObject) quotas[key];
+
+                        int maxQuota = quota.Value<int>("quota");
+                        int tokens = quota.Value<int>("tokens");
+                        DateTime updated = quota.Value<DateTime>("updated");
+
+                        if (DateTime.Now.Day == updated.Day) {
+                            tokens += consumedTokens;
+                        } else {
+                            tokens = 0;
+                        }
+
+                        quota["tokens"] = tokens;
+                        quota["isQuotaReached"] = tokens >= maxQuota;
+                        quota["updated"] = DateTime.Now;
+                    }
+
+                    return quotas;      
+                }" />
+                <cache-store-value key="tokenQuotas" value="@((JObject)context.Variables["tokenQuotas"])" duration="86400" />
+                <!-- Inform client about total consumed tokens -->
+                <set-variable name="totalTokens" value="@{
+                    JObject quotas = (JObject)context.Variables["tokenQuotas"];
+                    string key = (string)context.Variables["subscriptionKey"];
+
+                    if (quotas.ContainsKey(key)) {
+                        JObject quota = (JObject) quotas[key];    
+                        int tokens = quota.Value<int>("tokens");
+                            
+                        return tokens;
+                    }
+
+                    return 0;
+                    }" />
+                <set-header name="x-openai-total-consumed-tokens" exists-action="override">
+                    <value>@(context.Variables.GetValueOrDefault<int>("totalTokens", 0).ToString())</value>
+                </set-header>
+            </when>
+        </choose>
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
