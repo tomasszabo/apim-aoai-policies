@@ -1,11 +1,11 @@
 <!--
     API Management policy checking consumed token quotas of AOAI per day for given subscriptions
 
-		Requirements:
-		- APIM subscription key is stored in request header (not query parameter)
-		- need to adjust tokenQuotas variable:
-			- include given subscription keys
-			- define quotas per subscription keys
+        Requirements:
+        - APIM subscription key is stored in request header (not query parameter)
+        - need to adjust tokenQuotas variable:
+            - include given subscription keys
+            - define quotas per subscription keys
 -->
 <policies>
     <inbound>
@@ -71,22 +71,22 @@
                 <cache-lookup-value key="tokenQuotas" variable-name="tokenQuotas" />
                 <set-variable name="tokenQuotas" value="@{
                     JObject quotas = (JObject)context.Variables["tokenQuotas"];
-					string key = (string)context.Variables["subscriptionKey"];
+                    string key = (string)context.Variables["subscriptionKey"];
                     
                     if (quotas.ContainsKey(key)) {
-						int consumedTokens = 1;
+                        int consumedTokens = 1;
 
                         JObject response = context.Response.Body.As<JToken>(preserveContent: true) is JObject ? 
                             context.Response.Body.As<JObject>(preserveContent: true) :
                             null;
-						if (response != null && response.ContainsKey("body")) {
-							JObject body = response.Value<JObject>("body");
+                        if (response != null && response.ContainsKey("body")) {
+                            JObject body = response.Value<JObject>("body");
 
-							if (body.ContainsKey("usage")) {
-								JObject usage = response.Value<JObject>("usage");
-								consumedTokens = usage.ContainsKey("total_tokens") ? usage.Value<int>("total_tokens") : 0;
-							}
-						}
+                            if (body.ContainsKey("usage")) {
+                                JObject usage = response.Value<JObject>("usage");
+                                consumedTokens = usage.ContainsKey("total_tokens") ? usage.Value<int>("total_tokens") : 0;
+                            }
+                        }
 
                         JObject quota = (JObject) quotas[key];
 
